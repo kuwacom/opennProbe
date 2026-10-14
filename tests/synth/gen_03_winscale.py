@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """03_winscale.pcap: window scale option(scale=7)付きハンドシェイク + 大きな window 値
 
 目的: TCP_WIN_MAX_IN/OUT が TCP ヘッダの 16bit window 値そのままか(scale を掛けた値か)

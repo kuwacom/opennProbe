@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """06_icmp.pcap: echo request/reply と type/code 違いの ICMP フロー群
 
 目的: ICMP_TYPE = 最初のパケットの type×256+code、ICMP_IPV4_TYPE = 最初のパケットの

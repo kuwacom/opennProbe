@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """合成 pcap 生成の共通ヘルパ(nProbe 10.4 の挙動の観測に使ったものと同じ構成)
 
 - pcap 時刻は BASE_SEC(整数エポック秒)+秒/us オフセットを EDecimal で構築する

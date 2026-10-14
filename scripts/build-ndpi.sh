@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # nDPI を固定コミットのソースから静的ライブラリにビルドする(root・autotools 不要)
 # configure の生成物(ndpi_define.h・ndpi_config.h)は最小限を手で作る
 #

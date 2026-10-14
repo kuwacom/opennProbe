@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # ベンチ: pcap ごとに互換モード × L7 あり/なしで経過時間・最大 RSS・pps を測る(/usr/bin/time -v)
 #
 # 使い方: BENCH_LIST=<一覧.tsv> scripts/bench.sh [ラベル]

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """10_syn_extra.pcap: E3 vs E4 の判別 + RST/FIN 後の idle 期限挙動
 
 目的:

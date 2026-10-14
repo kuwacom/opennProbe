@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """04_unidir.pcap: 片方向 UDP フローと双方向 UDP フロー
 
 目的: 向き規則(src = フロー最初のパケットの送信側)と、片方向フローでの

@@ -7,3 +7,5 @@ __pycache__/
 *.csv
 # 合成 12 本の期待 CSV(opennProbe の出力)だけは含める
 !/tests/synth/expected/*/*.csv
+.venv/
+/python/build/

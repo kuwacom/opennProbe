@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """生成 pcap の読み戻し検証
 
 各 pcap のパケット数・時刻範囲と、パケットごとの IP 全長 / TTL / 送受信 /

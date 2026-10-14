@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """08_duration.pcap: 継続時間 0・IAT 統計・lifetime timeout(120 秒)の分割
 
 目的:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """07_dns.pcap: A/AAAA レコードのクエリと応答(TTL つき)
 
 目的: DNS_QUERY_ID / DNS_QUERY_TYPE(最初の DNS メッセージの ID と最初の質問の type)、

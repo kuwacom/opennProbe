@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """02_retrans.pcap: 同一 seq の再送を含む TCP フロー群
 
 目的: 再送判定と RETRANSMITTED_*_BYTES(バイトは IP 全長の合計)を検証する

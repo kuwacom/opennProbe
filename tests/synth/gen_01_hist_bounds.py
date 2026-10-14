@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """01_hist_bounds.pcap: IP total length が境界を跨ぐ UDP 単発フロー群
 
 目的: NUM_PKTS_* ヒストグラム5区間の境界(128/256/512/1024/1514 が「未満」か「以下」か)

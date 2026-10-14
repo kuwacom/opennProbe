@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """05_ttl.pcap: TTL 違いを混ぜた TCP フロー群
 
 目的: MIN/MAX_TTL が「S2D のパケットのうちフロー最初のパケットを除いたもの」の

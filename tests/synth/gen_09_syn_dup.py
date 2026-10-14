@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """09_syn_dup.pcap: SYN 重複・RST 後・seq 穴の埋め戻しの再送判定分離用
 
 目的: 再送判定の候補(A4/A5/B/C/C5)で割り切れない SYN 重複条件と

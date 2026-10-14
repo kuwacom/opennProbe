@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """12_ms_rounding.pcap: FLOW_DURATION_MILLISECONDS / START・END の us 端数丸め方向
 
 - S17 (sport 44001, t=0): UDP 2 パケット t=0.000000 / 1.999500 -> DUR 1999(floor) or 2000(round)

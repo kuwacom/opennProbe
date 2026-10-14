@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # 公式 12 本(CSE-CIC-IDS2018 の pcap)の回帰テスト
 #
 # pcap はリポジトリに含めないので、置き場所(ファイルかディレクトリ)を引数で与える。
@@ -26,7 +27,7 @@ if [ "${1:-}" = "--update" ]; then
   shift
 fi
 if [ $# -eq 0 ]; then
-  sed -n '2,/^set /p' "$0" | sed '$d'
+  sed -n '3,/^set /p' "$0" | sed '$d'
   exit 2
 fi
 if [ -n "${REGRESS_OUT:-}" ]; then

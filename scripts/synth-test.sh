@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # 合成 12 本の回帰テスト: pcap を生成 -> 変換 -> 期待 CSV(tests/synth/expected)とバイト単位で比べる
 #
 # 使い方: scripts/synth-test.sh [--update]

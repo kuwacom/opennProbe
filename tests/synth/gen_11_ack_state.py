@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """11_ack_state.pcap: 純 ACK が再送判定の「直前 seg」状態を更新するかの判別
 
 S15 (sport 43001, t=0): PA(1,len=10) -> 純 ACK(seq=11) -> PA(1,len=10) 再送
