@@ -36,3 +36,10 @@ if(OPENNPROBE_WITH_NDPI)
 endif()
 
 install(TARGETS opennprobe RUNTIME DESTINATION bin)
+
+# 合成 12 本の回帰テスト(pcap の生成に scapy 入りの Python が要る。無ければ SKIP)
+enable_testing()
+add_test(NAME synth COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/synth-test.sh")
+set_tests_properties(synth PROPERTIES
+  ENVIRONMENT "OPENNPROBE_BIN=$<TARGET_FILE:opennprobe>"
+  SKIP_RETURN_CODE 77)
