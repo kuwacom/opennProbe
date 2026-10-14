@@ -40,12 +40,13 @@ void usage(FILE* fp) {
                "  -o PATH            出力 CSV(入力 1 本。既定は標準出力)/出力ディレクトリ(入力が複数)\n"
                "  -j N               複数入力をファイル単位で N 並列に処理する(既定 1)\n"
                "  --no-l7            L7_PROTO を判定しない(nDPI を使わない)\n"
-               "  --compat MODE      規則の互換モード: official(既定)\n"
+               "  --compat MODE      規則の互換モード: official(既定。公式 CSV 互換)/ nprobe(nProbe 10.4 の生出力互換)\n"
                "  --keep-truncated-tail\n"
                "                     末尾の途中で切れたレコードも読めた部分で使う(既定は libpcap と同じく捨てる)\n"
                "  --spill-mb N       出力行をメモリにためる上限(MB。超えたら一時ファイルへ。0 は無制限。既定 64)\n"
                "  --tmpdir DIR       一時ファイルの置き場(既定 $TMPDIR か /tmp)\n"
                "  -v                 統計を標準エラーに出す\n"
+               "  --version          版と nDPI の版を出す\n"
                "  -h, --help         この説明\n");
 }
 
@@ -77,6 +78,16 @@ bool parseArgs(int argc, char** argv, Options& o) {
       o.keepTruncatedTail = true;
     } else if (a == "-v") {
       o.verbose = true;
+    } else if (a == "--version") {
+      // テストが L7 の有無を見分けられるよう nDPI の版も出す
+      std::string rev = "なし";
+      if (NdpiEngine::available()) {
+        NdpiEngine e;
+        std::string err;
+        if (e.init(err)) rev = e.revision();
+      }
+      std::printf("opennprobe %s (nDPI %s)\n", OPENNPROBE_VERSION, rev.c_str());
+      std::exit(0);
     } else if (a == "-h" || a == "--help") {
       usage(stdout);
       std::exit(0);
@@ -129,7 +140,7 @@ int convertOne(const std::string& in, const std::string& out, const Options& o, 
     const char* env = std::getenv("TMPDIR");
     tmpdir = (env != nullptr && *env != '\0') ? env : "/tmp";
   }
-  RowStore store(tmpdir, static_cast<size_t>(o.spillMb) << 20);
+  RowStore store(RowFormatter::header(l7 != nullptr), tmpdir, static_cast<size_t>(o.spillMb) << 20);
   {
     FlowBuilder builder(rules, l7, store);
     Packet p;

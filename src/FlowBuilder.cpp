@@ -30,24 +30,6 @@ inline int histBin(uint32_t L) {
   return -1;
 }
 
-inline int boundBin(uint32_t L) {
-  switch (L) {
-    case 128:
-      return 0;
-    case 256:
-      return 1;
-    case 512:
-      return 2;
-    case 1024:
-      return 3;
-    case 1514:
-      return 4;
-    default:
-      break;
-  }
-  return L > 1514 ? 5 : -1;
-}
-
 inline int dirOf(const Flow& f, const Packet& p) {
   return (p.sport == f.sport && std::memcmp(p.src, f.src, 16) == 0) ? 0 : 1;
 }
@@ -55,7 +37,7 @@ inline int dirOf(const Flow& f, const Packet& p) {
 }  // namespace
 
 FlowBuilder::FlowBuilder(const Rules& rules, NdpiEngine* l7, RowStore& store)
-    : rules_(rules), l7_(l7), store_(store), fmt_(rules) {}
+    : rules_(rules), l7_(l7), store_(store), fmt_(rules, l7 != nullptr) {}
 
 FlowBuilder::~FlowBuilder() {
   // finish() を呼ばずに破棄されたときも nDPI のフロー状態は解放する
@@ -86,8 +68,15 @@ void FlowBuilder::releaseFlow(uint32_t idx) {
 
 void FlowBuilder::resetFlow(Flow& f) {
   uint32_t gen = f.gen + 1;
+  // 秒スロットの確保済み領域は次のフローで使い回す
+  std::vector<uint64_t> sb0 = std::move(f.secBytes[0]);
+  std::vector<uint64_t> sb1 = std::move(f.secBytes[1]);
   f = Flow();
   f.gen = gen;
+  sb0.clear();
+  sb1.clear();
+  f.secBytes[0] = std::move(sb0);
+  f.secBytes[1] = std::move(sb1);
 }
 
 void FlowBuilder::initFlow(Flow& f, const Packet& p, const FlowKey& k) {
@@ -99,10 +88,8 @@ void FlowBuilder::initFlow(Flow& f, const Packet& p, const FlowKey& k) {
   f.proto = p.proto;
   f.v = p.v;
   f.first = f.last = f.lastAlive = p.tsUs;
-  f.seenSyn = p.proto == 6 && (p.flags & 0x12) == 0x02;
   f.deadline = kNoDeadline;
   f.live = true;
-  if (p.proto == 6) f.tcp.reset(new TcpRetxVariants());
   if (l7_ != nullptr) {
     f.l7h = l7_->newFlow();
     ++l7Live_;
@@ -114,7 +101,26 @@ void FlowBuilder::accUpdate(FlowAcc& a, const Packet& p, int d, bool firstPkt) {
   uint32_t L = plenOf(p);
   int b = histBin(L);
   if (b >= 0) a.hist[b] += 1;
-  a.ts[d].push_back(p.tsUs);
+  IatAcc& t = a.iat[d];
+  if (t.hasLast) {
+    const int64_t x = floorDiv(p.tsUs - t.lastTs, 1000);
+    if (t.n == 0) t.mx = x;
+    // 先頭から続く 0 ms の間隔は最小値の初期化に使わない(最初の 0 でない値で初期化する)
+    if (!t.started) {
+      if (x > 0) {
+        t.mn = x;
+        t.started = true;
+      }
+    } else if (x < t.mn) {
+      t.mn = x;
+    }
+    if (x > t.mx) t.mx = x;
+    t.n += 1;
+    t.sum += x;
+    t.sumSq += static_cast<__int128>(x) * x;
+  }
+  t.lastTs = p.tsUs;
+  t.hasLast = true;
   if (d == 0 && !firstPkt) {
     if (!a.hasTtl) {
       a.ttlMin = a.ttlMax = p.ttl;
@@ -128,16 +134,15 @@ void FlowBuilder::accUpdate(FlowAcc& a, const Packet& p, int d, bool firstPkt) {
 
 void FlowBuilder::l7Finalize(Flow& f) {
   if (f.l7h == nullptr) return;
-  l7_->finish(f.l7h, f.l7Master, f.l7App, f.l7Guess);
+  uint8_t guessed;
+  l7_->finish(f.l7h, f.l7Master, f.l7App, guessed);
   f.l7h = nullptr;
-  f.l7Done = true;
   --l7Live_;
 }
 
 void FlowBuilder::l7Feed(Flow& f, const Packet& p) {
   if (l7_ == nullptr || f.l7Stop) return;
-  ++f.l7n;
-  // nDPI が以後のパケットを無視する状態なら呼んでも結果は変わらない(参照実装は呼び続けるが数だけ合わせる)
+  // nDPI が以後のパケットを無視する状態なら呼んでも結果は変わらない
   if (f.l7Frozen) return;
   uint16_t app = 0;
   bool extra = false;
@@ -172,8 +177,15 @@ void FlowBuilder::count(Flow& f, const Packet& p, int d, bool firstPkt, bool acc
   const bool wasTerm = f.terminated;
   f.pk[d] += 1;
   f.by[d] += L;
-  int bb = boundBin(L);
-  if (bb >= 0) f.bound[bb] += 1;
+  if (rules_.secondBytesRaw) {
+    const int64_t slot = floorDiv(p.tsUs, 1000000) - floorDiv(f.first, 1000000);
+    // 負のスロット(時刻の逆行)は出力に現れないので持たない
+    if (slot >= 0) {
+      std::vector<uint64_t>& sb = f.secBytes[d];
+      if (sb.size() <= static_cast<uint64_t>(slot)) sb.resize(static_cast<size_t>(slot) + 1, 0);
+      sb[static_cast<size_t>(slot)] += sb[static_cast<size_t>(slot)] == 0 ? uint64_t(L) + 1 : L;
+    }
+  }
   if (f.pk[0] + f.pk[1] == 1) {
     f.lmin = f.lmax = L;
   } else {
@@ -183,7 +195,7 @@ void FlowBuilder::count(Flow& f, const Packet& p, int d, bool firstPkt, bool acc
   if (p.proto == 6) {
     f.flags[d] |= p.flags;
     if (p.win > f.win[d]) f.win[d] = p.win;
-    f.tcp->update(p, d, L, f.pk[1 - d]);
+    f.tcp.update(p, d, L, f.pk[1 - d], rules_);
     int64_t seglen = p.plen;
     if (rules_.retxSynFin) seglen += ((p.flags & 2) ? 1 : 0) + ((p.flags & 1) ? 1 : 0);
     if (seglen > 0) {
@@ -200,14 +212,10 @@ void FlowBuilder::count(Flow& f, const Packet& p, int d, bool firstPkt, bool acc
   }
   // 終了済み TCP フローでは再送パケットは期限判定用の最終時刻を進めない
   if (!(wasTerm && isRetx && rules_.termRetxNoUpdate)) f.lastAlive = p.tsUs;
-  if (p.proto == 1 || p.proto == 58) {
-    if (!f.hasIcmp) {
-      f.hasIcmp = true;
-      f.icmpType = p.icmpType;
-      f.icmpCode = p.icmpCode;
-    }
-    f.icmpLastType = p.icmpType;
-    f.icmpLastCode = p.icmpCode;
+  if ((p.proto == 1 || p.proto == 58) && !f.hasIcmp) {
+    f.hasIcmp = true;
+    f.icmpType = p.icmpType;
+    f.icmpCode = p.icmpCode;
   }
   if (p.proto == 17 && (p.sport == 53 || p.dport == 53 || p.sport == 5355 || p.dport == 5355)) {
     DnsInfo q;
@@ -234,7 +242,6 @@ void FlowBuilder::touch(Flow& f, const Packet& p, int d) {
   }
   f.dlast[d] = p.tsUs;
   accUpdate(f.acc, p, d, false);
-  f.nTouch += 1;
 }
 
 void FlowBuilder::emit(Flow& f) {
@@ -272,46 +279,52 @@ void FlowBuilder::expire(int64_t sec) {
     HeapItem it = heap_.top();
     heap_.pop();
     Flow& f = pool_[it.idx];
+    // 作り直されたフロー・より早い期限で積み直された古い項目は捨てる
     if (!f.live || f.gen != it.gen || f.deadline != it.deadline) continue;
     f.deadline = kCollected;
     expiring_.push_back(it.idx);
   }
   if (expiring_.empty()) return;
-  // 参照実装は dict の挿入順に全フローを見るので、同じ秒に切れたフローはその順で出す
+  // 参照実装は表の挿入順に全フローを見るので、同じ秒に切れたフローはその順で出す
   std::sort(expiring_.begin(), expiring_.end(),
             [this](uint32_t a, uint32_t b) { return pool_[a].order < pool_[b].order; });
   for (uint32_t idx : expiring_) {
     Flow& f = pool_[idx];
-    int64_t ls;
-    int64_t lim;
-    if (f.terminated) {
-      ls = floorDiv(f.lastAlive, 1000000);
-      lim = rules_.termIdleSec;
-    } else {
-      ls = floorDiv(f.last, 1000000);
-      lim = rules_.idleSec;
-    }
-    EndKind why;
-    if (sec - ls > lim) {
-      why = lim == rules_.idleSec ? EndKind::kIdle : EndKind::kTerm;
-    } else {
-      why = EndKind::kLife;
-    }
     emit(f);
-    uint64_t h = f.key.hash();
-    active_.erase(f.key, h);
-    uint32_t* old = ended_.find(f.key, h);
-    if (old != nullptr) {
-      *old = static_cast<uint32_t>(why);
-    } else {
-      ended_.insert(f.key, h, static_cast<uint32_t>(why));
-    }
+    active_.erase(f.key, f.key.hash());
     releaseFlow(idx);
   }
 }
 
+bool FlowBuilder::rstExpired(const Flow& f, const Packet& p, int d, bool hasPrev, int64_t prevTs) const {
+  // 直前に届いた別のパケットが最終パケットから rstIdle 以上後(走査が他のパケットの到着で進むことを模したもの)
+  if (hasPrev && prevTs - f.last >= rules_.rstIdleUs) return true;
+  // 到着パケット自身が rstIdle 以上後で、このフローの再送でない(再送はフローに入る: 合成 S10)
+  if (p.tsUs - f.last >= rules_.rstIdleUs) {
+    if (p.proto != 6) return true;
+    return !f.tcp.wouldCountBin(p, d, rules_.binOld);
+  }
+  return false;
+}
+
+void FlowBuilder::startFlow(const Packet& p, const FlowKey& k, uint64_t h) {
+  uint32_t idx = allocFlow();
+  Flow& f = pool_[idx];
+  initFlow(f, p, k);
+  f.order = nextOrder_++;
+  active_.insert(k, h, idx);
+  if (active_.size() > activePeak_) activePeak_ = active_.size();
+  count(f, p, 0, true, false);
+  updateDeadline(idx);
+}
+
 void FlowBuilder::add(const Packet& p) {
   ++packets_;
+  // RST 後の期限は「直前に届いたパケット」の時刻で見る(全長 0 で捨てるパケットも含む)
+  const bool hadPrev = hasPrev_;
+  const int64_t prevTs = prevTs_;
+  hasPrev_ = true;
+  prevTs_ = p.tsUs;
   if (rules_.dropLen0 && p.v == 4 && p.ipLen == 0) {
     ++dropped_;
     return;
@@ -326,31 +339,31 @@ void FlowBuilder::add(const Packet& p) {
   const uint64_t h = k.hash();
   uint32_t* slot = active_.find(k, h);
   if (slot == nullptr) {
-    uint32_t idx = allocFlow();
-    Flow& f = pool_[idx];
-    initFlow(f, p, k);
-    uint32_t why = 0;
-    // 同じキーの前のフローが期限で切れた続きか(L7 の扱いを切り分けるための列)
-    if (ended_.erase(k, h, &why)) f.cont = static_cast<EndKind>(why);
-    f.order = nextOrder_++;
-    active_.insert(k, h, idx);
-    if (active_.size() > activePeak_) activePeak_ = active_.size();
-    count(f, p, 0, true, false);
-    updateDeadline(idx);
+    startFlow(p, k, h);
     return;
   }
   const uint32_t idx = *slot;
   Flow& f = pool_[idx];
   const int d = dirOf(f, p);
 
+  if (rules_.rstIdleUs > 0 && f.terminated) {
+    if (rstExpired(f, p, d, hadPrev, prevTs)) {
+      // 旧フローを出して表から外し、表の末尾(挿入順)に新フローを作る
+      emit(f);
+      active_.erase(k, h);
+      releaseFlow(idx);
+      startFlow(p, k, h);
+      return;
+    }
+  }
+
   // 既存フローを出して、同じ表の位置(挿入順を保つ)に p から新フローを作る
-  auto restart = [&](SplitKind kind) {
+  auto restart = [&]() {
     emit(f);
     uint64_t order = f.order;
     resetFlow(f);
     initFlow(f, p, k);
     f.order = order;
-    f.split = kind;
     count(f, p, 0, true, false);
     updateDeadline(idx);
   };
@@ -359,7 +372,7 @@ void FlowBuilder::add(const Packet& p) {
     // 到着パケットと同じ向きの最終時刻からの経過(秒単位)が idle を超えたら新フロー
     int64_t ref = f.hasD[d] ? f.dlast[d] : f.last;
     if (sec - floorDiv(ref, 1000000) > rules_.idleSec) {
-      restart(SplitKind::kDirIdle);
+      restart();
       return;
     }
   }
@@ -368,20 +381,19 @@ void FlowBuilder::add(const Packet& p) {
     if (parseDns(p.payload, p.payloadLen, q) && q.qr == 0) {
       if (rules_.dnsSplit && q.id != f.dnsId) {
         // 応答済み DNS フローに別 ID の問い合わせ: 旧フローをそのまま出して新フロー
-        restart(SplitKind::kDnsId);
+        restart();
         return;
       }
       if (rules_.dnsTouch) {
         // 同じ ID の問い合わせ(再送): 旧フローに一部だけ反映して出し、統計を引き継ぐ
         touch(f, p, d);
         emit(f);
-        FlowAcc acc = std::move(f.acc);
+        FlowAcc acc = f.acc;
         uint64_t order = f.order;
         resetFlow(f);
         initFlow(f, p, k);
-        f.acc = std::move(acc);
+        f.acc = acc;
         f.order = order;
-        f.split = SplitKind::kTouch;
         count(f, p, 0, false, true);
         updateDeadline(idx);
         return;

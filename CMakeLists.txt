@@ -22,6 +22,7 @@ add_executable(opennprobe
 
 # 浮動小数点の列(標準偏差など)を参照実装とビット単位で合わせるため、FMA への融合や -ffast-math 系を使わない
 target_compile_options(opennprobe PRIVATE -O2 -Wall -Wextra -ffp-contract=off -fno-fast-math)
+target_compile_definitions(opennprobe PRIVATE OPENNPROBE_VERSION="${PROJECT_VERSION}")
 
 if(OPENNPROBE_WITH_NDPI)
   find_library(NDPI_LIB NAMES libndpi.a PATHS "${NDPI_PREFIX}/lib" NO_DEFAULT_PATH)

@@ -14,7 +14,6 @@ namespace opennprobe {
  *
  * ### 特徴
  * - 整数は自前で 10 進化する(snprintf より速く、ロケールにも依存しない)
- * - 浮動小数点は小数 3 桁固定の 1 種類だけ使うので snprintf に任せる
  */
 class TextBuffer {
  public:
@@ -46,15 +45,6 @@ class TextBuffer {
     } else {
       putU(static_cast<uint64_t>(v));
     }
-  }
-
-  /** ### putFixed3
-   * Python の f"{x:.3f}" と同じ表記(glibc の printf も正しく丸めるので一致する)
-   */
-  void putFixed3(double v) {
-    char tmp[64];
-    int n = std::snprintf(tmp, sizeof(tmp), "%.3f", v);
-    if (n > 0) buf_.append(tmp, static_cast<size_t>(n));
   }
 
  private:

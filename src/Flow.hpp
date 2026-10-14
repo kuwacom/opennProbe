@@ -2,41 +2,53 @@
 #pragma once
 
 #include <cstdint>
-#include <memory>
 #include <vector>
 
 #include "FlowKey.hpp"
-#include "TcpRetxVariants.hpp"
+#include "TcpRetx.hpp"
 
 struct ndpi_flow_struct;
 
 namespace opennprobe {
 
 /**
- * # FlowAcc
- * DNS の touch で新フローへ引き継がれる統計(ヒストグラム・向き別時刻列・S2D の TTL)
+ * # IatAcc
+ * 1 向きの到着間隔(ms に切り捨てた us 差)の集計
  *
  * ### 特徴
- * - 向き別の到着時刻(us)を全部持つ。IAT とその派生列(2 パス計算の標準偏差など)はここから出力時に計算する
+ * - 出力に要る値(個数・和・二乗和・最大・先頭の 0 を飛ばした最小)だけを逐次に持つ。時刻列は持たない
+ * - 和・二乗和は整数で厳密に持つ(標準偏差は出力時に float32 で計算する)
+ */
+struct IatAcc {
+  int64_t lastTs = 0;
+  bool hasLast = false;
+  bool started = false;  // 0 でない間隔を見たか(最小値の初期化)
+  uint64_t n = 0;
+  int64_t mn = 0;
+  int64_t mx = 0;
+  __int128 sum = 0;
+  __int128 sumSq = 0;
+};
+
+/**
+ * # FlowAcc
+ * DNS の touch で新フローへ引き継がれる統計(ヒストグラム・向き別の到着間隔・S2D の TTL)
  */
 struct FlowAcc {
   uint32_t hist[5] = {};
-  std::vector<int64_t> ts[2];
+  IatAcc iat[2];
   uint8_t ttlMin = 0;
   uint8_t ttlMax = 0;
   bool hasTtl = false;
 };
-
-enum class SplitKind : uint8_t { kNone = 0, kDirIdle, kDnsId, kTouch };
-enum class EndKind : uint8_t { kNone = 0, kIdle, kTerm, kLife };
 
 /**
  * # Flow
  * 1 フローの集計状態
  *
  * ### 特徴
- * - TCP の再送候補の状態は TCP フローだけが持つ(UDP/ICMP のメモリを抑える)
  * - nDPI のフロー状態は判定が確定した時点で結果だけ残して解放する
+ * - SECOND_BYTES の秒スロットは nprobe モードのときだけ使う
  */
 struct Flow {
   FlowKey key;
@@ -47,8 +59,6 @@ struct Flow {
   uint8_t v = 0;
   uint8_t proto = 0;
   bool terminated = false;
-  SplitKind split = SplitKind::kNone;
-  EndKind cont = EndKind::kNone;
   bool hasD[2] = {false, false};
   bool hasHiseq[2] = {false, false};
   uint8_t flags[2] = {0, 0};
@@ -74,28 +84,20 @@ struct Flow {
   bool hasIcmp = false;
   uint8_t icmpType = 0;
   uint8_t icmpCode = 0;
-  uint8_t icmpLastType = 0;
-  uint8_t icmpLastCode = 0;
-
-  uint32_t nTouch = 0;
-  // L が 128/256/512/1024/1514 ちょうど・1514 超のパケット数(ALT_BOUND)
-  uint32_t bound[6] = {};
 
   FlowAcc acc;
-  std::unique_ptr<TcpRetxVariants> tcp;
+  TcpRetx tcp;
+  // 向き別に「最初のパケットの秒からの秒差」ごとの IP バイト + 1(0 はパケットなし)
+  std::vector<uint64_t> secBytes[2];
 
   // L7(nDPI)
   ndpi_flow_struct* l7h = nullptr;
-  uint32_t l7n = 0;
-  bool l7Stop = false;  // 参照実装の l7_stop(これ以降 nDPI に渡さない)
+  bool l7Stop = false;  // 以後 nDPI に渡さない
   bool l7Frozen = false;  // nDPI 側が以後のパケットを無視する状態(fail_with_unknown)
-  bool l7Done = false;  // 結果確定済み(l7h は解放済み)
-  bool seenSyn = false;
   uint16_t l7Master = 0;
   uint16_t l7App = 0;
-  uint8_t l7Guess = 0;
 
-  // フロー表の挿入順(Python dict の順序。置き換えでは変わらない)
+  // フロー表の挿入順(同じ秒に切れたフローを出す順。置き換えでは変わらない)
   uint64_t order = 0;
   // 期限切れになる最初の秒(これ以上の秒の走査で出力される)
   int64_t deadline = 0;

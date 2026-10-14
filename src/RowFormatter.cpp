@@ -2,17 +2,11 @@
 #include "RowFormatter.hpp"
 
 #include <cmath>
-#include <type_traits>
-#include <vector>
+#include <cstring>
 
 namespace opennprobe {
 
 namespace {
-
-// 参照実装の (x - mean) ** 2 は libm の pow を呼ぶ。コンパイラが x*x に畳まないよう関数ポインタ経由で呼ぶ
-double (*volatile gPow)(double, double) = ::pow;
-
-inline double sq(double x) { return gPow(x, 2.0); }
 
 void putIpv4(TextBuffer& b, const uint8_t* a) {
   for (int i = 0; i < 4; ++i) {
@@ -21,154 +15,78 @@ void putIpv4(TextBuffer& b, const uint8_t* a) {
   }
 }
 
-const char* contName(const Flow& f) {
-  switch (f.cont) {
-    case EndKind::kIdle:
-      return "idle";
-    case EndKind::kTerm:
-      return "term";
-    case EndKind::kLife:
-      return "life";
-    default:
-      break;
-  }
-  return nullptr;
-}
-
-const char* splitName(SplitKind s) {
-  switch (s) {
-    case SplitKind::kDirIdle:
-      return "diridle";
-    case SplitKind::kDnsId:
-      return "dnsid";
-    case SplitKind::kTouch:
-      return "touch";
-    default:
-      break;
-  }
-  return "";
-}
-
-/**
- * # IstatsResult
- * 参照実装の istats(要素数・最小・最大・平均・母標準偏差)
- */
-struct Istats {
-  double mean = 0;
-  double sd = 0;
-  double sqSum = 0;  // Σ(x - mean)^2(標本標準偏差でも同じ値を使う)
-};
-
-template <typename T>
-Istats istats(const std::vector<T>& v) {
-  Istats r;
-  if (v.empty()) return r;
-  const double n = static_cast<double>(v.size());
-  if constexpr (std::is_integral<T>::value) {
-    // 整数の和は厳密(Python の int)。2^53 未満なら int/int の真の除算は double どうしの除算と一致する
-    __int128 s = 0;
-    for (T x : v) s += x;
-    r.mean = static_cast<double>(s) / n;
-  } else {
-    double s = 0.0;
-    for (T x : v) s += x;
-    r.mean = s / n;
-  }
-  double q = 0.0;
-  for (T x : v) q += sq(static_cast<double>(x) - r.mean);
-  r.sqSum = q;
-  r.sd = std::sqrt(q / n);
-  return r;
-}
-
 }  // namespace
+
+std::string RowFormatter::header(bool withL7) {
+  std::string h =
+      "FLOW_START_MILLISECONDS,FLOW_END_MILLISECONDS,IPV4_SRC_ADDR,L4_SRC_PORT,IPV4_DST_ADDR,L4_DST_PORT,PROTOCOL,";
+  if (withL7) h += "L7_PROTO,";
+  h +=
+      "IN_BYTES,OUT_BYTES,IN_PKTS,OUT_PKTS,TCP_FLAGS,CLIENT_TCP_FLAGS,SERVER_TCP_FLAGS,FLOW_DURATION_MILLISECONDS,"
+      "DURATION_IN,DURATION_OUT,MIN_TTL,MAX_TTL,LONGEST_FLOW_PKT,SHORTEST_FLOW_PKT,MIN_IP_PKT_LEN,MAX_IP_PKT_LEN,"
+      "SRC_TO_DST_SECOND_BYTES,DST_TO_SRC_SECOND_BYTES,RETRANSMITTED_IN_PKTS,RETRANSMITTED_IN_BYTES,"
+      "RETRANSMITTED_OUT_PKTS,RETRANSMITTED_OUT_BYTES,SRC_TO_DST_AVG_THROUGHPUT,DST_TO_SRC_AVG_THROUGHPUT,"
+      "NUM_PKTS_UP_TO_128_BYTES,NUM_PKTS_128_TO_256_BYTES,NUM_PKTS_256_TO_512_BYTES,NUM_PKTS_512_TO_1024_BYTES,"
+      "NUM_PKTS_1024_TO_1514_BYTES,TCP_WIN_MAX_IN,TCP_WIN_MAX_OUT,ICMP_TYPE,ICMP_IPV4_TYPE,DNS_QUERY_ID,"
+      "DNS_QUERY_TYPE,DNS_TTL_ANSWER,FTP_COMMAND_RET_CODE,SRC_TO_DST_IAT_MIN,SRC_TO_DST_IAT_MAX,SRC_TO_DST_IAT_AVG,"
+      "SRC_TO_DST_IAT_STDDEV,DST_TO_SRC_IAT_MIN,DST_TO_SRC_IAT_MAX,DST_TO_SRC_IAT_AVG,DST_TO_SRC_IAT_STDDEV";
+  return h;
+}
 
 void RowFormatter::putDir(const Flow& f, int i) {
   TextBuffer& b = buf_;
-  const std::vector<int64_t>& ts = f.acc.ts[i];
-  const size_t m = ts.size() > 0 ? ts.size() - 1 : 0;
-  if (m == 0) {
-    b.put(",0,0,0,0,0,0.000/0.000/0,0/0/0/0,0,0");
+  const IatAcc& t = f.acc.iat[i];
+  if (t.n == 0) {
+    b.put(",0,0,0,0");
     return;
   }
-  std::vector<int64_t> a(m);
-  std::vector<double> af(m);
-  std::vector<int64_t> bms(m);
-  for (size_t j = 0; j < m; ++j) {
-    int64_t us = ts[j + 1] - ts[j];
-    a[j] = floorDiv(us, 1000);
-    af[j] = static_cast<double>(us) / 1000.0;
-    bms[j] = floorDiv(ts[j + 1], 1000) - floorDiv(ts[j], 1000);
-  }
-  // 先頭から続く 0 ms の IAT は最小値の初期化に使わない
-  int64_t m0 = 0;
-  bool started = false;
-  int64_t mx = a[0];
-  __int128 sum = 0;
-  __int128 sumSq = 0;
-  for (int64_t x : a) {
-    if (!started) {
-      if (x > 0) {
-        m0 = x;
-        started = true;
-      }
-    } else if (x < m0) {
-      m0 = x;
-    }
-    if (x > mx) mx = x;
-    sum += x;
-    sumSq += static_cast<__int128>(x) * x;
-  }
-  Istats ia = istats(a);
-  // 公式の丸め誤差を再現: 整数の Σx・Σx² から割り算以降を float32 で行う
-  float n32 = static_cast<float>(static_cast<double>(m));
-  float mean32 = static_cast<float>(static_cast<double>(sum)) / n32;
-  float q32 = static_cast<float>(static_cast<double>(sumSq)) / n32;
-  float mm32 = mean32 * mean32;
-  float var32 = q32 - mm32;
-  int64_t sd32 = var32 > 0 ? static_cast<int64_t>(std::sqrt(var32)) : 0;
+  // 平均は整数和 / 個数の真の除算(和が 2^53 未満なら double どうしの除算と一致する)を 0 方向に切り捨て
+  const double n = static_cast<double>(t.n);
+  const int64_t avg = static_cast<int64_t>(static_cast<double>(t.sum) / n);
+  // 標準偏差: nDPI の ndpi_data_variance と同じ演算順 (f32(Σx²) - f32(Σx)² / n) / n を各段 float32 で行い、
+  // float32 の sqrt を切り捨てる(公式 CSV・nProbe 10.4 の丸め誤差を再現)
+  const float n32 = static_cast<float>(n);
+  const float s32 = static_cast<float>(static_cast<double>(t.sum));
+  const float q32 = static_cast<float>(static_cast<double>(t.sumSq));
+  const float sq = s32 * s32;
+  const float var32 = (q32 - sq / n32) / n32;
+  const int64_t sd = var32 > 0 ? static_cast<int64_t>(std::sqrt(var32)) : 0;
+  b.put(',');
+  b.putI(t.mn);
+  b.put(',');
+  b.putI(t.mx);
+  b.put(',');
+  b.putI(avg);
+  b.put(',');
+  b.putI(sd);
+}
 
-  Istats ifl = istats(af);
-  int64_t bmn = bms[0];
-  int64_t bmx = bms[0];
-  for (int64_t x : bms) {
-    if (x < bmn) bmn = x;
-    if (x > bmx) bmx = x;
+void RowFormatter::putSecondBytes(const Flow& f, int d) {
+  if (!rules_.secondBytesRaw) {
+    // 公式の後処理(推定): 逆向きバイト / 生の継続 ms。生の継続が 0 ms のときは 100 で割る
+    const int64_t raw = floorDiv(f.last - f.first, 1000);
+    const int64_t by = static_cast<int64_t>(f.by[1 - d]);
+    buf_.putI(raw > 0 ? floorDiv(by, raw) : floorDiv(by, 100));
+    return;
   }
-  Istats ib = istats(bms);
-
-  b.put(',');
-  b.putI(m0);
-  b.put(',');
-  b.putI(mx);
-  b.put(',');
-  b.putI(static_cast<int64_t>(ia.mean));
-  b.put(',');
-  b.putI(sd32);
-  b.put(',');
-  b.putI(static_cast<int64_t>(ia.sd));
-  b.put(',');
-  b.putFixed3(ifl.mean);
-  b.put('/');
-  b.putFixed3(ifl.sd);
-  b.put('/');
-  b.putU(m);
-  b.put(',');
-  b.putI(bmn);
-  b.put('/');
-  b.putI(bmx);
-  b.put('/');
-  b.putI(static_cast<int64_t>(ib.mean));
-  b.put('/');
-  b.putI(static_cast<int64_t>(ib.sd));
-  b.put(',');
-  b.putI(static_cast<int64_t>(ifl.sd));
-  b.put(',');
-  if (m > 1) {
-    b.putI(static_cast<int64_t>(std::sqrt(ia.sqSum / static_cast<double>(m - 1))));
-  } else {
-    b.put('0');
+  // nProbe の生出力: 絶対秒のスロットごとの IP バイトをカンマで結合(空スロットは空文字列)。
+  // スロット数は最終パケットと最初のパケットの秒の差 + 1。その向きのパケットが最初のスロットに無いときは先頭に空要素が 1 つ付く
+  const std::vector<uint64_t>& sb = f.secBytes[d];
+  const int64_t n = floorDiv(f.last, 1000000) - floorDiv(f.first, 1000000) + 1;
+  TextBuffer& t = tmp_;
+  t.clear();
+  bool firstElem = true;
+  if (sb.empty() || sb[0] == 0) firstElem = false;  // 先頭の空要素
+  for (int64_t i = 0; i < n; ++i) {
+    if (!firstElem) t.put(',');
+    firstElem = false;
+    if (static_cast<uint64_t>(i) < sb.size() && sb[static_cast<size_t>(i)] != 0) t.putU(sb[static_cast<size_t>(i)] - 1);
   }
+  // CSV: カンマを含む値だけ引用符で囲む(pandas の to_csv と同じ)
+  const bool quote = std::memchr(t.data(), ',', t.size()) != nullptr;
+  if (quote) buf_.put('"');
+  buf_.put(t.data(), t.size());
+  if (quote) buf_.put('"');
 }
 
 void RowFormatter::emit(const Flow& f, RowStore& store) {
@@ -197,22 +115,18 @@ void RowFormatter::emit(const Flow& f, RowStore& store) {
   b.put(',');
   b.putU(f.proto);
   b.put(',');
-  // L7: master が 0 でなければ master、0 なら app
-  b.putU(f.l7Master != 0 ? f.l7Master : f.l7App);
-  b.put(',');
-  b.putU(f.l7Master);
-  b.put('.');
-  b.putU(f.l7App);
-  b.put(',');
-  b.putU(f.l7Guess);
-  b.put(',');
-  b.putU(f.l7n);
-  b.put(',');
-  const char* cn = contName(f);
-  b.put(cn != nullptr ? cn : splitName(f.split));
-  b.put(',');
-  b.putU(f.seenSyn ? 1 : 0);
-  b.put(',');
+  if (withL7_) {
+    if (rules_.l7Raw && f.l7Master != 0 && f.l7App != 0 && f.l7Master != f.l7App) {
+      // nProbe の生出力の書式(例: 7.63)
+      b.putU(f.l7Master);
+      b.put('.');
+      b.putU(f.l7App);
+    } else {
+      // master が 0 でなければ master、0 なら app
+      b.putU(f.l7Master != 0 ? f.l7Master : f.l7App);
+    }
+    b.put(',');
+  }
   b.putU(f.by[0]);
   b.put(',');
   b.putU(f.by[1]);
@@ -227,26 +141,13 @@ void RowFormatter::emit(const Flow& f, RowStore& store) {
   b.put(',');
   b.putU(f.flags[1]);
   b.put(',');
-  const int64_t durUs = f.last - f.first;
-  const int64_t raw = floorDiv(durUs, 1000);
-  b.putI(durUs);
-  b.put(',');
-  b.putI(raw);
-  b.put(',');
-  b.putI(raw > 1 ? raw : 1);
+  const int64_t raw = floorDiv(f.last - f.first, 1000);
+  // 公式の後処理: 継続 0 ms を 1 にする(nProbe 10.4 の生出力は 0 のまま)
+  b.putI(rules_.durMin1 && raw < 1 ? 1 : raw);
   b.put(',');
   b.putI(f.hasD[0] ? floorDiv(f.dlast[0] - f.dfirst[0], 1000) : 0);
   b.put(',');
   b.putI(f.hasD[1] ? floorDiv(f.dlast[1] - f.dfirst[1], 1000) : 0);
-  b.put(',');
-  for (int i = 0; i < 2; ++i) {
-    if (i) b.put('/');
-    if (f.hasD[i]) {
-      b.putI(floorDiv(f.dlast[i], 1000) - floorDiv(f.dfirst[i], 1000));
-    } else {
-      b.put('0');
-    }
-  }
   b.put(',');
   b.putU(f.acc.hasTtl ? f.acc.ttlMin : 0);
   b.put(',');
@@ -260,20 +161,12 @@ void RowFormatter::emit(const Flow& f, RowStore& store) {
   b.put(',');
   b.putU(f.lmax);
   b.put(',');
-  // 公式の後処理(推定): 逆向きバイト / 生の継続 ms。生の継続が 0 ms のときは 100 で割る
-  const int64_t by0 = static_cast<int64_t>(f.by[0]);
-  const int64_t by1 = static_cast<int64_t>(f.by[1]);
-  b.putI(raw > 0 ? floorDiv(by1, raw) : floorDiv(by1, 100));
+  putSecondBytes(f, 0);
   b.put(',');
-  b.putI(raw > 0 ? floorDiv(by0, raw) : floorDiv(by0, 100));
+  putSecondBytes(f, 1);
   b.put(',');
   uint64_t rx[2][2] = {{0, 0}, {0, 0}};
-  if (f.tcp) {
-    for (int d = 0; d < 2; ++d) {
-      rx[d][0] = f.tcp->cnt_[TcpRetxVariants::kA5][d][0];
-      rx[d][1] = f.tcp->cnt_[TcpRetxVariants::kA5][d][1];
-    }
-  }
+  if (f.proto == 6) f.tcp.counts(rules_, rx);
   b.putU(rx[0][0]);
   b.put(',');
   b.putU(rx[0][1]);
@@ -282,6 +175,8 @@ void RowFormatter::emit(const Flow& f, RowStore& store) {
   b.put(',');
   b.putU(rx[1][1]);
   b.put(',');
+  const int64_t by0 = static_cast<int64_t>(f.by[0]);
+  const int64_t by1 = static_cast<int64_t>(f.by[1]);
   // raw + 1 が 0 になるのは時刻が 1 ms 逆行した場合だけ(参照実装は 0 除算で止まる)
   b.putI(raw + 1 != 0 ? floorDiv(by0 * 8000, raw + 1) : 0);
   b.put(',');
@@ -295,25 +190,20 @@ void RowFormatter::emit(const Flow& f, RowStore& store) {
   b.put(',');
   b.putU(f.win[1]);
   b.put(',');
-  RowStore::Shape shape = RowStore::kBase;
-  int64_t icmpLast = 0;
   if ((f.proto == 1 || f.proto == 58) && f.hasIcmp) {
-    shape = RowStore::kIcmp;
     b.putU(static_cast<uint32_t>(f.icmpType) * 256 + f.icmpCode);
     b.put(',');
     b.putU(f.icmpType);
-    icmpLast = static_cast<int64_t>(f.icmpLastType) * 256 + f.icmpLastCode;
   } else if (f.proto == 6) {
     // nProbe の共用領域: TCP では RETRANSMITTED_IN_BYTES の第 0 バイトと第 2 バイトが ICMP 列に出る
-    uint64_t r = rx[0][1];
+    const uint64_t r = rx[0][1];
     b.putU((r & 0xFF) * 256 + ((r >> 16) & 0xFF));
     b.put(',');
     b.putU(r & 0xFF);
   } else {
     b.put("0,0");
   }
-  const uint32_t len1 = static_cast<uint32_t>(b.size());
-
+  b.put(',');
   b.putU(f.hasDns ? f.dnsId : 0);
   b.put(',');
   b.putU(f.hasDns ? f.dnsType : 0);
@@ -322,44 +212,8 @@ void RowFormatter::emit(const Flow& f, RowStore& store) {
   b.put(",0");
   putDir(f, 0);
   putDir(f, 1);
-  const uint32_t len2 = static_cast<uint32_t>(b.size()) - len1;
-
-  uint32_t lenRx = 0;
-  if (f.proto == 6 && f.tcp) {
-    shape = RowStore::kTcp;
-    for (int k = 0; k < TcpRetxVariants::kCount; ++k) {
-      if (k) b.put(',');
-      const auto& c = f.tcp->cnt_[k];
-      b.putU(c[0][0]);
-      b.put('/');
-      b.putU(c[0][1]);
-      b.put('/');
-      b.putU(c[1][0]);
-      b.put('/');
-      b.putU(c[1][1]);
-    }
-    lenRx = static_cast<uint32_t>(b.size()) - len1 - len2;
-  }
-
-  static const uint32_t kBoundKey[6] = {128, 256, 512, 1024, 1514, 9999};
-  bool firstB = true;
-  for (int i = 0; i < 6; ++i) {
-    if (f.bound[i] == 0) continue;
-    if (!firstB) b.put(';');
-    firstB = false;
-    b.putU(kBoundKey[i]);
-    b.put(':');
-    b.putU(f.bound[i]);
-  }
-  b.put(',');
-  b.put(splitName(f.split));
-  b.put(',');
-  if (f.terminated) b.put("tcp");
-  b.put(',');
-  b.putU(f.nTouch);
-  b.put(',');
-  b.putU(f.v);
-  store.add(startMs, shape, b.str(), len1, len2, lenRx, icmpLast);
+  b.put('\n');
+  store.add(startMs, b.data(), b.size());
 }
 
 }  // namespace opennprobe

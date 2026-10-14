@@ -21,7 +21,7 @@ namespace opennprobe {
  * パケット列からフローを組み立て、終わったフローを RowStore へ出す
  *
  * ### 特徴
- * - 期限切れの判定は「パケット時刻の秒が進んだ最初のパケット」の処理前に行う(参照実装の全フロー走査と等価)。
+ * - 期限切れの判定は「パケット時刻の秒が進んだ最初のパケット」の処理前に行う(全フロー走査と等価)。
  *   全走査の代わりに期限の秒で並べたヒープを使い、同じ秒に切れたフローは表への挿入順で出す
  * - フローの出力順は参照実装と同じ(同じ開始時刻の行の並びと、nDPI の giveup を呼ぶ順序が一致する)
  * - nDPI のフロー状態は判定が確定したら結果だけ残して解放する
@@ -54,6 +54,8 @@ class FlowBuilder {
   // idx の位置に p から新しいフローを作る(order は呼び出し側が決める)
   void initFlow(Flow& f, const Packet& p, const FlowKey& k);
   void resetFlow(Flow& f);
+  // 表に無いキーの最初のパケットから新しいフローを作る
+  void startFlow(const Packet& p, const FlowKey& k, uint64_t h);
   void count(Flow& f, const Packet& p, int d, bool firstPkt, bool accDone);
   void touch(Flow& f, const Packet& p, int d);
   void accUpdate(FlowAcc& a, const Packet& p, int d, bool firstPkt);
@@ -61,6 +63,8 @@ class FlowBuilder {
   void l7Finalize(Flow& f);
   void emit(Flow& f);
   void expire(int64_t sec);
+  // RST を見たフロー f に p が来たとき f を期限切れにするか(hasPrev/prevTs は直前に届いたパケット)
+  bool rstExpired(const Flow& f, const Packet& p, int d, bool hasPrev, int64_t prevTs) const;
   void updateDeadline(uint32_t idx);
   int64_t computeDeadline(const Flow& f) const;
 
@@ -73,13 +77,14 @@ class FlowBuilder {
   std::deque<Flow> pool_;
   std::vector<uint32_t> free_;
   OpenTable active_;
-  // 期限で切れたキーの理由(同じキーの次のフローの ALT_CONT)
-  OpenTable ended_;
   std::priority_queue<HeapItem, std::vector<HeapItem>, std::greater<HeapItem>> heap_;
   std::vector<uint32_t> expiring_;
 
   bool hasTick_ = false;
   int64_t tick_ = 0;
+  // 直前に届いたパケット(どのフローでも)の時刻。RST 後の期限に使う
+  bool hasPrev_ = false;
+  int64_t prevTs_ = 0;
   uint64_t nextOrder_ = 0;
   uint64_t packets_ = 0;
   uint64_t dropped_ = 0;
