@@ -73,6 +73,8 @@ REGRESS_LIST=list.tsv REGRESS_REF=ref/ scripts/regress.sh      # list.tsv: <名�
 BENCH_LIST=list.tsv BENCH_OUT=bench.tsv scripts/bench.sh <ラベル>
 ```
 
+設計の詳細は `docs/design.md`、測定結果は `docs/benchmark.md`。
+
 ## ライセンス
 
 GPL-3.0-or-later(`LICENSE`)。静的リンクする nDPI は LGPL-3.0。
