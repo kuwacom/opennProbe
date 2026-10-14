@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opennprobe"
+version = "1.0.0"
+description = "opennprobe(pcap -> NF-v3 CSV)を subprocess で呼ぶ薄いラッパー"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.9"
+
+[tool.setuptools]
+packages = ["opennprobe"]
