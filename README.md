@@ -37,6 +37,8 @@ build/opennprobe -j 8 -o outdir/ a.pcap b.pcap ...  # 複数本をファイル�
 | `--no-l7` | nDPI を使わない(L7 系の列は 0) |
 | `--compat MODE` | 規則の互換モード。現在は `official`(公式 CSV に合わせた規則)のみ |
 | `--keep-truncated-tail` | 末尾の途中で切れたレコードも読めた部分で使う(既定は libpcap と同じく捨てる) |
+| `--spill-mb N` | 出力行をメモリにためる上限(MB)。超えた分は整列して一時ファイルに出し最後にマージする(既定 64。0 は無制限) |
+| `--tmpdir DIR` | 一時ファイルの置き場(既定 `$TMPDIR` か `/tmp`) |
 | `-v` | 件数・ピークのフロー数・処理時間を標準エラーに出す |
 
 Python からは `python/opennprobe`(subprocess で呼ぶ薄いラッパー)を使う。

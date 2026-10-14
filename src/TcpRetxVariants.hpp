@@ -104,6 +104,20 @@ class TcpRetxVariants {
 
   // 区間を加えて併合する(隣接する区間もつなぐ)
   static void insertInterval(std::vector<std::pair<uint64_t, uint64_t>>& iv, uint64_t s, uint64_t e) {
+    // 多くは末尾への追加か末尾との併合なので先に扱う
+    if (iv.empty()) {
+      iv.emplace_back(s, e);
+      return;
+    }
+    if (std::make_pair(s, e) >= iv.back()) {
+      auto& b = iv.back();
+      if (s <= b.second) {
+        if (e > b.second) b.second = e;
+      } else {
+        iv.emplace_back(s, e);
+      }
+      return;
+    }
     size_t pos = 0;
     while (pos < iv.size() && iv[pos] < std::make_pair(s, e)) ++pos;
     iv.insert(iv.begin() + static_cast<std::ptrdiff_t>(pos), std::make_pair(s, e));

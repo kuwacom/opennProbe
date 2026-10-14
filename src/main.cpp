@@ -30,6 +30,8 @@ struct Options {
   bool verbose = false;
   bool keepTruncatedTail = false;
   int jobs = 1;
+  std::string tmpdir;
+  long spillMb = 64;
 };
 
 void usage(FILE* fp) {
@@ -41,6 +43,8 @@ void usage(FILE* fp) {
                "  --compat MODE      規則の互換モード: official(既定)\n"
                "  --keep-truncated-tail\n"
                "                     末尾の途中で切れたレコードも読めた部分で使う(既定は libpcap と同じく捨てる)\n"
+               "  --spill-mb N       出力行をメモリにためる上限(MB。超えたら一時ファイルへ。0 は無制限。既定 64)\n"
+               "  --tmpdir DIR       一時ファイルの置き場(既定 $TMPDIR か /tmp)\n"
                "  -v                 統計を標準エラーに出す\n"
                "  -h, --help         この説明\n");
 }
@@ -64,6 +68,11 @@ bool parseArgs(int argc, char** argv, Options& o) {
       o.l7 = false;
     } else if (a == "--compat") {
       o.compat = need("--compat");
+    } else if (a == "--tmpdir") {
+      o.tmpdir = need("--tmpdir");
+    } else if (a == "--spill-mb") {
+      o.spillMb = std::atol(need("--spill-mb"));
+      if (o.spillMb < 0) o.spillMb = 0;
     } else if (a == "--keep-truncated-tail") {
       o.keepTruncatedTail = true;
     } else if (a == "-v") {
@@ -115,7 +124,12 @@ int convertOne(const std::string& in, const std::string& out, const Options& o, 
     l7 = &engine;
     if (o.verbose) std::fprintf(stderr, "ndpi %s\n", engine.revision().c_str());
   }
-  RowStore store;
+  std::string tmpdir = o.tmpdir;
+  if (tmpdir.empty()) {
+    const char* env = std::getenv("TMPDIR");
+    tmpdir = (env != nullptr && *env != '\0') ? env : "/tmp";
+  }
+  RowStore store(tmpdir, static_cast<size_t>(o.spillMb) << 20);
   {
     FlowBuilder builder(rules, l7, store);
     Packet p;
@@ -146,7 +160,8 @@ int convertOne(const std::string& in, const std::string& out, const Options& o, 
   }
   if (o.verbose) {
     double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    std::fprintf(stderr, "flows %zu row_text %zu B time %.3f s pps %.0f\n", store.rows(), store.textBytes(), sec,
+    std::fprintf(stderr, "flows %zu row_text %zu B runs %zu time %.3f s pps %.0f\n", store.rows(), store.textBytes(),
+                 store.runs(), sec,
                  sec > 0 ? static_cast<double>(reader.records()) / sec : 0.0);
   }
   return 0;
